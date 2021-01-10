@@ -1,21 +1,20 @@
 #include <stdio.h>
 #include <iostream>
-#include "opencv2/imgproc.hpp"
-#include <opencv2/core/core.hpp>
-#include <opencv2/opencv.hpp>
+#include "opencv4/opencv2/imgproc.hpp"
+#include <opencv4/opencv2/core/core.hpp>
+#include <opencv4/opencv2/opencv.hpp>
 #include <math.h>
 #include <string>
-#include <cuda_runtime.h>
-#include <opencv2/cudafeatures2d.hpp>
-#include "opencv2/imgproc/types_c.h"
-#include "opencv2/cudacodec.hpp"
-#include "opencv2/cudaimgproc.hpp"
-#include "opencv2/cudafilters.hpp"
-#include "opencv2/cudawarping.hpp"
-#include <opencv2/videoio.hpp>
-#include <opencv2/highgui.hpp>
-#include <device_launch_parameters.h>
-
+#include <cuda/cuda_runtime.h>
+#include <opencv4/opencv2/cudafeatures2d.hpp>
+#include "opencv4/opencv2/imgproc/types_c.h"
+#include "opencv4/opencv2/cudacodec.hpp"
+#include "opencv4/opencv2/cudaimgproc.hpp"
+#include "opencv4/opencv2/cudafilters.hpp"
+#include "opencv4/opencv2/cudawarping.hpp"
+#include <opencv4/opencv2/videoio.hpp>
+#include <opencv4/opencv2/highgui.hpp>
+#include <cuda/device_launch_parameters.h>
 
 using namespace cv;
 using namespace std;
@@ -159,8 +158,8 @@ int main( int argc, char** argv )
             filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
             filter->apply(out_device, out_device);
             Mat result_host(out_device);
-            cout << "cols=" << out_device.cols << endl;
-            cout << "rows=" << out_device.rows << endl;
+            cout << "cols=" << disc_device.cols << endl;
+            cout << "rows=" << disc_device.rows << endl;
             Mat back_host(disc_device);
             cv::imshow("MyCameraPreview",result_host);
     		if((char)cv::waitKey(1) == (char)27)
@@ -216,13 +215,13 @@ __global__ void changeDetection(cuda::PtrStepSz<uchar>in_device, cuda::PtrStepSz
     int G_diff= abs(disc_device.ptr(y)[x*3+1]-in_device.ptr(y)[x*3+1]);
     int B_diff= abs(disc_device.ptr(y)[x*3]-in_device.ptr(y)[x*3]);
     int Sim=(R_diff+G_diff+B_diff)/3;
-    if(Sim>=10)  //se movimento
+    if(Sim>=10)  //   if movement
     {
         int R_old_diff= abs(old_disc_device.ptr(y)[x*3+2]-in_device.ptr(y)[x*3+2]);
         int G_old_diff= abs(old_disc_device.ptr(y)[x*3+1]-in_device.ptr(y)[x*3+1]);
         int B_old_diff= abs(old_disc_device.ptr(y)[x*3]-in_device.ptr(y)[x*3]);
         int old_Sim=(R_old_diff+G_old_diff+B_old_diff)/3;
-        if(old_Sim<=10)  //se movimento minore del vecchio
+        if(old_Sim<=10)  //if movement less than the old
         {
             disc_device.ptr(y)[x*3+2]=old_disc_device.ptr(y)[x*3+2];
             disc_device.ptr(y)[x*3+1]=old_disc_device.ptr(y)[x*3+1];
@@ -237,10 +236,10 @@ __global__ void changeDetection(cuda::PtrStepSz<uchar>in_device, cuda::PtrStepSz
                 int arrR[150];
                 int arrG[150];
                 int arrB[150];
-                //scorro lista per calcolare il giusto discriminatore per ogni pixel
+                //scroll through the list to calculate the right discriminator for each pixel
                 for(int k=0; k<buff_size; k++)
                 {
-                    // il discrminatore é dato dalla media dei valori RGB del pixel
+                    // the discriminator is given by the average of the RGB values ​​of the pixel
                     arrR[k]=buffer_device.ptr(y+k*in_device.rows)[x*3+2];
                     arrG[k]=buffer_device.ptr(y+k*in_device.rows)[x*3+1];
                     arrB[k]=buffer_device.ptr(y+k*in_device.rows)[x*3];

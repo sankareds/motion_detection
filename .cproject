@@ -99,9 +99,7 @@
 								<option defaultValue="true" id="com.nvidia.cuda.toolchain.compiler.device-debug.1806651459" name="Generate debug information for device code (-G)" superClass="com.nvidia.cuda.toolchain.compiler.device-debug" useByScannerDiscovery="false" valueType="boolean"/>
 								<option defaultValue="true" id="com.nvidia.cuda.toolchain.compiler.debug.1537920174" name="Generate debug information for host code (-g)" superClass="com.nvidia.cuda.toolchain.compiler.debug" useByScannerDiscovery="false" valueType="boolean"/>
 								<option id="nvcc.compiler.pic.821278486" name="Position Independent Code (-fPIC)" superClass="nvcc.compiler.pic" useByScannerDiscovery="false"/>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="nvcc.compiler.include.paths.1324323480" name="Include paths (-I)" superClass="nvcc.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath">
-									<listOptionValue builtIn="false" value="/usr/local/include/opencv4"/>
-								</option>
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="true" id="nvcc.compiler.include.paths.1324323480" name="Include paths (-I)" superClass="nvcc.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath"/>
 								<inputType id="com.nvidia.cuda.toolchain.input.c.1068383162" name="C" superClass="com.nvidia.cuda.toolchain.input.c"/>
 								<inputType id="com.nvidia.cuda.toolchain.input.cu.2093137587" name="CUDA" superClass="com.nvidia.cuda.toolchain.input.cu"/>
 								<inputType id="com.nvidia.cuda.toolchain.input.cpp.949294028" name="C++" superClass="com.nvidia.cuda.toolchain.input.cpp"/>
@@ -166,4 +164,12 @@
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
 	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
+	<storageModule moduleId="refreshScope" versionNumber="2">
+		<configuration configurationName="Debug">
+			<resource resourceType="PROJECT" workspacePath="/motion_detection"/>
+		</configuration>
+		<configuration configurationName="Release">
+			<resource resourceType="PROJECT" workspacePath="/motion_detection"/>
+		</configuration>
+	</storageModule>
 </cproject>

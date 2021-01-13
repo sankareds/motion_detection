@@ -1,19 +1,19 @@
 #include <stdio.h>
 #include <iostream>
-#include "opencv4/opencv2/imgproc.hpp"
-#include <opencv4/opencv2/core/core.hpp>
-#include <opencv4/opencv2/opencv.hpp>
+#include "opencv2/imgproc.hpp"
+#include <opencv2/core/core.hpp>
+#include <opencv2/opencv.hpp>
 #include <math.h>
 #include <string>
 #include <cuda/cuda_runtime.h>
-#include <opencv4/opencv2/cudafeatures2d.hpp>
-#include "opencv4/opencv2/imgproc/types_c.h"
-#include "opencv4/opencv2/cudacodec.hpp"
-#include "opencv4/opencv2/cudaimgproc.hpp"
-#include "opencv4/opencv2/cudafilters.hpp"
-#include "opencv4/opencv2/cudawarping.hpp"
-#include <opencv4/opencv2/videoio.hpp>
-#include <opencv4/opencv2/highgui.hpp>
+#include <opencv2/cudafeatures2d.hpp>
+#include "opencv2/imgproc/types_c.h"
+#include "opencv2/cudacodec.hpp"
+#include "opencv2/cudaimgproc.hpp"
+#include "opencv2/cudafilters.hpp"
+#include "opencv2/cudawarping.hpp"
+#include <opencv2/videoio.hpp>
+#include <opencv2/highgui.hpp>
 #include <cuda/device_launch_parameters.h>
 
 using namespace cv;
@@ -25,6 +25,11 @@ __global__ void calculateDiscr(cuda::PtrStepSz<uchar>in_device, cuda::PtrStepSz<
 __global__ void changeDetection(cuda::PtrStepSz<uchar>in_device, cuda::PtrStepSz<uchar>buffer_device, cuda::PtrStepSz<uchar>disc_device, cuda::PtrStepSz<uchar>out_device, cuda::PtrStepSz<uchar>k_device, int buff_size,cuda::PtrStepSz<uchar>old_disc_device); //motion detection
 __device__ int sort_and_median(int arr[], int length); //calculate new dicriminator for a pixel
 
+cuda::GpuMat maskImage(cuda::GpuMat);
+int detectMotion(const Mat &, Mat &, Mat &,
+                 int, int, int, int,
+                 int ,
+                 Scalar &);
 
 int main( int argc, char** argv )
 {
@@ -35,8 +40,10 @@ int main( int argc, char** argv )
     cudaEvent_t start, stop;
     float time;
     Mat img;
-    cv::namedWindow("MyCameraPreview", cv::WINDOW_AUTOSIZE);
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink";
+    cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Background", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Masked", cv::WINDOW_AUTOSIZE);
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=1 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -71,7 +78,8 @@ int main( int argc, char** argv )
         cout << "ERROR: Failed to write the video" << endl;
         return -1;
     }
-    Mat inframe; //input frame
+
+
     Mat outframe(N, M, CV_8UC1, Scalar(0)); //output frame
     Mat disc(N, M, CV_8UC3, Scalar(0,0,0)); //background
     Mat old_disc(N, M, CV_8UC3, Scalar(0,0,0)); //old backgorund for comparison
@@ -79,7 +87,29 @@ int main( int argc, char** argv )
     Mat k(N, M, CV_8UC1,Scalar(0)); //last buffer element pointer
     Mat buffer(N*buff_size,M, CV_8UC3 , Scalar(0,0,0)); //buffer for motion memorization
     Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
-    cuda::GpuMat in_device, out_device, disc_device, buffer_device, k_device, old_disc_device, resized_device; //same Mats on Gpu
+    Mat masked;
+
+
+
+    unsigned int width  = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+    unsigned int height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+    unsigned int fps    = cap.get(cv::CAP_PROP_FPS);
+    unsigned int pixels = width*height;
+    std::cout <<"Frame size : "<<width<<" x "<<height<<", "<<pixels<<" Pixels "<<fps<<" FPS"<<std::endl;
+
+    Mat inframe;
+
+
+    unsigned int frameByteSize = pixels * 3;
+    std::cout << "Before Cuda Call" << std::endl;
+
+
+    void *unified_ptr;
+    cudaMallocManaged(&unified_ptr, frameByteSize);
+    cv::cuda::GpuMat mask_device(height, width, CV_8UC3, unified_ptr);
+    Mat cpu_in_device(height, width, CV_8UC3, unified_ptr);
+
+    cuda::GpuMat out_device, disc_device, buffer_device, k_device, old_disc_device, resized_device; //same Mats on Gpu
 	//GpuMats upload on Gpu
     disc_device.upload(disc);
     old_disc_device.upload(old_disc);
@@ -90,6 +120,7 @@ int main( int argc, char** argv )
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord( start, 0 );
+    TRAIN = true;
     while(1)
     {
         outframe.setTo(0);
@@ -112,12 +143,21 @@ int main( int argc, char** argv )
                         return -2;
                     }
                     N_FRAME++;
-                    in_device.upload(inframe);
-                    cuda::resize(in_device, resized_device, Size(M,N));
+                    //inframe.copyTo(cpu_in_device);
+                    mask_device.upload(inframe);
+                    cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
+                    cv::cuda::GpuMat in_device = maskImage(mask_device);
+                    cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
+
+
                     cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
                                 filter->apply(resized_device, resized_device);
                     filter -> apply(resized_device, resized_device);
+                    cuda::resize(in_device, resized_device, Size(M,N));
+                    cout << in_device.size() << in_device.type() <<endl;
                     trainKernel<<<M, N>>>(resized_device, buffer_device, y);
+                    cout << "end" <<endl;
+
             }
             cout<<"Calcolo sfondo iniziale"<<endl;
             calculateDiscr<<<M, N>>>(resized_device, buffer_device, disc_device, buff_size, old_disc_device);
@@ -150,18 +190,38 @@ int main( int argc, char** argv )
                 cudaEventDestroy( stop );
                 return -1;
             }
-            in_device.upload(inframe); //carico frame input su GPU
+
+            mask_device.upload(inframe);
+            cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
+            cv::cuda::GpuMat in_device = maskImage(mask_device);
+            cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
             cuda::resize(in_device, resized_device, Size(M,N));
             cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
             filter->apply(resized_device, resized_device);
             changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
+
+
+
+
             filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
             filter->apply(out_device, out_device);
+
             Mat result_host(out_device);
-            cout << "cols=" << disc_device.cols << endl;
-            cout << "rows=" << disc_device.rows << endl;
             Mat back_host(disc_device);
-            cv::imshow("MyCameraPreview",result_host);
+
+            Mat result_cropped;
+            // Detect motion in window
+            int x_start = 10, x_stop = inframe.cols-11;
+            int y_start = 350, y_stop = 530;
+            Scalar color(0,255,255);
+            int number_of_changes = detectMotion(result_host, inframe, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color);
+            cout << "number of changes" << number_of_changes;
+            if(number_of_changes>=100)
+            {
+                cout << "--------------****motion detected------------**************" << endl;
+            }
+            cv::imshow("Output",result_host);
+            cv::imshow("Background",back_host);
     		if((char)cv::waitKey(1) == (char)27)
     			break;
             oVW.write(result_host);

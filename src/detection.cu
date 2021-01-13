@@ -15,6 +15,7 @@
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
 #include <cuda/device_launch_parameters.h>
+#include "opencv2/cudaarithm.hpp"
 
 using namespace cv;
 using namespace std;
@@ -30,6 +31,7 @@ int detectMotion(const Mat &, Mat &, Mat &,
                  int, int, int, int,
                  int ,
                  Scalar &);
+bool saveImg(Mat, const string, const string, const char *, const char *);
 
 int main( int argc, char** argv )
 {
@@ -121,6 +123,18 @@ int main( int argc, char** argv )
     cudaEventCreate(&stop);
     cudaEventRecord( start, 0 );
     TRAIN = true;
+
+    int number_of_changes, number_of_sequence=0;
+    const string DIR = "/tmp/motion/pics/"; // directory where the images will be stored
+    const string EXT = ".jpg"; // extension of the images
+    const int DELAY = 500; // in mseconds, take a picture every 1/2 second
+    const string LOGFILE = "/tmp/motion/log";
+
+    // Format of directory
+    string DIR_FORMAT = "%d%h%Y"; // 1Jan1970
+    string FILE_FORMAT = DIR_FORMAT + "/" + "%d%h%Y_%H%M%S"; // 1Jan1970/1Jan1970_12153
+    string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
+
     while(1)
     {
         outframe.setTo(0);
@@ -146,14 +160,15 @@ int main( int argc, char** argv )
                     //inframe.copyTo(cpu_in_device);
                     mask_device.upload(inframe);
                     cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
+                    //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
                     cv::cuda::GpuMat in_device = maskImage(mask_device);
                     cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
 
 
+                    cuda::resize(in_device, resized_device, Size(M,N));
                     cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
                                 filter->apply(resized_device, resized_device);
                     filter -> apply(resized_device, resized_device);
-                    cuda::resize(in_device, resized_device, Size(M,N));
                     cout << in_device.size() << in_device.type() <<endl;
                     trainKernel<<<M, N>>>(resized_device, buffer_device, y);
                     cout << "end" <<endl;
@@ -193,6 +208,7 @@ int main( int argc, char** argv )
 
             mask_device.upload(inframe);
             cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
+            //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
             cv::cuda::GpuMat in_device = maskImage(mask_device);
             cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
             cuda::resize(in_device, resized_device, Size(M,N));
@@ -206,19 +222,32 @@ int main( int argc, char** argv )
             filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
             filter->apply(out_device, out_device);
 
+
+            cv::cuda::threshold(out_device, out_device, 127, 255, 0);
             Mat result_host(out_device);
             Mat back_host(disc_device);
 
             Mat result_cropped;
             // Detect motion in window
-            int x_start = 10, x_stop = inframe.cols-11;
-            int y_start = 350, y_stop = 530;
+            int x_start = 0, x_stop = inframe.cols;
+            int y_start = 0, y_stop = inframe.rows;
             Scalar color(0,255,255);
-            int number_of_changes = detectMotion(result_host, inframe, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color);
+
+
+            number_of_changes = detectMotion(result_host, inframe, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color);
             cout << "number of changes" << number_of_changes;
-            if(number_of_changes>=100)
+            if(number_of_changes>200)
             {
                 cout << "--------------****motion detected------------**************" << endl;
+                if(number_of_sequence % 2 == 0){
+					cout << "writing image to disk" << inframe.rows << endl;
+					saveImg(inframe,DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+					saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
+                }
+                number_of_sequence++;
+            }else
+            {
+                number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);
             cv::imshow("Background",back_host);

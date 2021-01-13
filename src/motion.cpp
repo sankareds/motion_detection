@@ -6,10 +6,16 @@
 #include <opencv2/cudafeatures2d.hpp>
 #include "opencv2/cudacodec.hpp"
 #include "opencv2/cudaimgproc.hpp"
+#include "opencv2/imgcodecs.hpp"
 #include <opencv2/cudafeatures2d.hpp>
 #include "opencv2/cudacodec.hpp"
 #include "opencv2/cudaimgproc.hpp"
 #include "opencv2/cudaarithm.hpp"
+#include <fstream>
+#include <sstream>
+#include <dirent.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 using namespace std;
 using namespace cv;
@@ -25,7 +31,7 @@ int detectMotion(const Mat & motion, Mat & result, Mat & result_cropped,
     // if not to much changes then the motion is real (neglect agressive snow, temporary sunlight)
 
     cout << "stddev" << stddev[0] << endl;
-    if(stddev[0] > 15 and  stddev[0] < 25)
+    if(stddev[0] > 20 and  stddev[0] < 90)
     {
         int number_of_changes = 0;
         int min_x = motion.cols, max_x = 0;
@@ -67,4 +73,51 @@ int detectMotion(const Mat & motion, Mat & result, Mat & result_cropped,
         return number_of_changes;
     }
     return 0;
+}
+
+
+inline void directoryExistsOrCreate(const char* pzPath)
+{
+    DIR *pDir;
+    // directory doesn't exists -> create it
+    if ( pzPath == NULL || (pDir = opendir (pzPath)) == NULL)
+        mkdir(pzPath, 0777);
+    // if directory exists we opened it and we
+    // have to close the directory again.
+    else if(pDir != NULL)
+        (void) closedir (pDir);
+}
+
+int incr = 0;
+bool saveImg(Mat image, const string DIRECTORY, const string EXTENSION, const char * DIR_FORMAT, const char * FILE_FORMAT)
+{
+
+	vector<int> compression_params;
+	compression_params.push_back(IMWRITE_JPEG_QUALITY);
+	compression_params.push_back(100);
+
+    stringstream ss;
+    time_t seconds;
+    struct tm * timeinfo;
+    char TIME[80];
+    time (&seconds);
+    // Get the current time
+    timeinfo = localtime (&seconds);
+
+    // Create name for the date directory
+    strftime (TIME,80,DIR_FORMAT,timeinfo);
+    ss.str("");
+    ss << DIRECTORY << TIME;
+    directoryExistsOrCreate(ss.str().c_str());
+    ss << "/cropped";
+    directoryExistsOrCreate(ss.str().c_str());
+
+    // Create name for the image
+    strftime (TIME,80,FILE_FORMAT,timeinfo);
+    ss.str("");
+    if(incr < 100) incr++; // quick fix for when delay < 1s && > 10ms, (when delay <= 10ms, images are overwritten)
+    else incr = 0;
+    ss << DIRECTORY << TIME << static_cast<int>(incr) << EXTENSION;
+    cout << "image location=" << ss.str().c_str() << endl;
+    return imwrite(ss.str().c_str(), image, compression_params);
 }

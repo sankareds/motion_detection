@@ -16,6 +16,7 @@
 #include <opencv2/highgui.hpp>
 #include <cuda/device_launch_parameters.h>
 #include "opencv2/cudaarithm.hpp"
+#include "opencv2/cudabgsegm.hpp"
 
 using namespace cv;
 using namespace std;
@@ -27,11 +28,35 @@ __global__ void changeDetection(cuda::PtrStepSz<uchar>in_device, cuda::PtrStepSz
 __device__ int sort_and_median(int arr[], int length); //calculate new dicriminator for a pixel
 
 cuda::GpuMat maskImage(cuda::GpuMat);
-int detectMotion(const Mat &, Mat &, Mat &,
+int detectMotion(const GpuMat &, Mat &, Mat &,
                  int, int, int, int,
                  int ,
-                 Scalar &);
+                 Scalar &, Scalar);
 bool saveImg(Mat, const string, const string, const char *, const char *);
+
+int getContourSize(const Mat &result_host) {
+	vector<Vec4i> hierarchy;
+	vector<vector<Point> > contours;
+	cv::findContours(result_host, contours, hierarchy, CV_RETR_CCOMP,
+			CV_CHAIN_APPROX_SIMPLE);
+	int largest_area = 0;
+	if (contours.size() > 5 && contours.size() < 50) {
+
+		int largest_contour_index = 0;
+
+		for (int i = 0; i < contours.size(); i++) {
+			double a = cv::contourArea(contours[i], false);
+			cout << "contour area=" << a << endl;
+			if (a > largest_area) {
+				largest_area = a;
+
+				largest_contour_index = i;
+			}
+		}
+	}
+
+	return largest_area;
+}
 
 int main( int argc, char** argv )
 {
@@ -45,7 +70,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Background", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Masked", cv::WINDOW_AUTOSIZE);
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=1 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -85,14 +110,14 @@ int main( int argc, char** argv )
     Mat outframe(N, M, CV_8UC1, Scalar(0)); //output frame
     Mat disc(N, M, CV_8UC3, Scalar(0,0,0)); //background
     Mat old_disc(N, M, CV_8UC3, Scalar(0,0,0)); //old backgorund for comparison
-    Mat resized (N, M, CV_8UC3, Scalar(0,0,0)); //resized image
+    Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
     Mat k(N, M, CV_8UC1,Scalar(0)); //last buffer element pointer
     Mat buffer(N*buff_size,M, CV_8UC3 , Scalar(0,0,0)); //buffer for motion memorization
     Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
     Mat masked;
 
 
-
+    //cap.set(15, -8.0);
     unsigned int width  = cap.get(cv::CAP_PROP_FRAME_WIDTH);
     unsigned int height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
     unsigned int fps    = cap.get(cv::CAP_PROP_FPS);
@@ -122,7 +147,7 @@ int main( int argc, char** argv )
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord( start, 0 );
-    TRAIN = true;
+    TRAIN = false;
 
     int number_of_changes, number_of_sequence=0;
     const string DIR = "/tmp/motion/pics/"; // directory where the images will be stored
@@ -134,6 +159,9 @@ int main( int argc, char** argv )
     string DIR_FORMAT = "%d%h%Y"; // 1Jan1970
     string FILE_FORMAT = DIR_FORMAT + "/" + "%d%h%Y_%H%M%S"; // 1Jan1970/1Jan1970_12153
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
+
+
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2();
 
     while(1)
     {
@@ -210,12 +238,13 @@ int main( int argc, char** argv )
             cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
             //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
             cv::cuda::GpuMat in_device = maskImage(mask_device);
-            cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
+            //cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
             cuda::resize(in_device, resized_device, Size(M,N));
             cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
             filter->apply(resized_device, resized_device);
-            changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
-
+            mog2->apply(resized_device, out_device);
+            //changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
+            cv::cuda::threshold(out_device, out_device, 127, 255, CV_THRESH_BINARY);
 
 
 
@@ -223,26 +252,35 @@ int main( int argc, char** argv )
             filter->apply(out_device, out_device);
 
 
-            cv::cuda::threshold(out_device, out_device, 127, 255, 0);
+            GpuMat thresh;
+            //cv::cuda::threshold(out_device, thresh, 127, 255, 0);
             Mat result_host(out_device);
-            Mat back_host(disc_device);
+
+
+
+
+            Mat back_host(resized_device);
 
             Mat result_cropped;
             // Detect motion in window
             int x_start = 0, x_stop = inframe.cols;
             int y_start = 0, y_stop = inframe.rows;
             Scalar color(0,255,255);
-
-
-            number_of_changes = detectMotion(result_host, inframe, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color);
+            cv::Scalar mean, std;
+			Mat in_device_cpu;
+            in_device.download(in_device_cpu);
+            cv::cuda::meanStdDev(out_device, mean, std);
+            number_of_changes = detectMotion(out_device, in_device_cpu, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color, std);
+            int contourSize = getContourSize(result_host);
             cout << "number of changes" << number_of_changes;
-            if(number_of_changes>200)
+            cout << "stddev=" << std[0] << "|| number of changes=" << number_of_changes << "|| Contour=" << contourSize<< endl;
+            if(N_FRAME > 50 && number_of_changes > 300 && contourSize > 100 )
             {
-                cout << "--------------****motion detected------------**************" << endl;
-                if(number_of_sequence % 2 == 0){
+                //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
+                if(number_of_sequence % 1 == 0){
 					cout << "writing image to disk" << inframe.rows << endl;
-					saveImg(inframe,DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
-					saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
+					saveImg( in_device_cpu , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
                 number_of_sequence++;
             }else

@@ -26,12 +26,28 @@ using namespace std;
 using namespace cv;
 
 cv::cuda::GpuMat srcDevice, mask, finalImg;
-bool found = false;
+bool found = true;
 
 Mat src, img1;
 
 Point point;
-vector<Point> pts;
+//vector<Point> pts;
+
+vector<Point> pts= { Point(65,100) , Point(569,60), Point(906,193),
+		Point(1223,349), Point(1218,613), Point(1192,698), Point(54,685),
+		Point(32,225), Point(64,103) };
+
+//[65, 100;
+// 569, 60;
+// 906, 193;
+// 1223, 349;
+// 1218, 613;
+// 1192, 698;
+// 54, 685;
+// 32, 225;
+// 64, 103]
+
+
 int drag = 0;
 int var = 0;
 int flag = 0;
@@ -48,10 +64,12 @@ cv::cuda::GpuMat doMask(cv::cuda::GpuMat srci, cv::cuda::GpuMat d, bool preview=
 
 	}
 
-	if(!found){
+	if(mask.rows == 0){
 		Mat tmp_mask = Mat::zeros(srci.size(), CV_8UC1);
 		fillPoly(tmp_mask, pts, Scalar(255, 255, 255), 8, 0);
+		cout <<  pts << endl;
 		mask.upload(tmp_mask);
+
 	}
 	cv::cuda::bitwise_and(srci, srci, desti, mask);
 	finalImg = desti;

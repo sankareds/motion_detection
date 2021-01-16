@@ -11,6 +11,7 @@
 #include "opencv2/cudacodec.hpp"
 #include "opencv2/cudaimgproc.hpp"
 #include "opencv2/cudafilters.hpp"
+#include "opencv2/cudalegacy.hpp"
 #include "opencv2/cudawarping.hpp"
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
@@ -40,7 +41,6 @@ int getContourSize(const Mat &result_host) {
 	cv::findContours(result_host, contours, hierarchy, CV_RETR_CCOMP,
 			CV_CHAIN_APPROX_SIMPLE);
 	int largest_area = 0;
-	if (contours.size() > 5 && contours.size() < 50) {
 
 		int largest_contour_index = 0;
 
@@ -52,7 +52,6 @@ int getContourSize(const Mat &result_host) {
 
 				largest_contour_index = i;
 			}
-		}
 	}
 
 	return largest_area;
@@ -70,7 +69,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Background", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Masked", cv::WINDOW_AUTOSIZE);
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -161,7 +160,9 @@ int main( int argc, char** argv )
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
 
 
-    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2();
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,32,true);
+    Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
+    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(8,8));
 
     while(1)
     {
@@ -234,15 +235,39 @@ int main( int argc, char** argv )
                 return -1;
             }
 
-            mask_device.upload(inframe);
-            cv::cuda::cvtColor(mask_device, mask_device, cv::COLOR_BGR2GRAY);
+            GpuMat yuv;
+            yuv.upload(inframe);
+
+
+
+            cv::cuda::cvtColor(yuv, yuv, cv::COLOR_BGR2Lab);
+            std::vector<GpuMat> channels;
+            cv::cuda::split(yuv, channels);
+
+            clahe->apply(channels[0], channels[0]);
+            //cv::cuda::equalizeHist(channels[0], channels[0]);
+            cv::cuda::merge(channels, yuv);
+            cv::cuda::cvtColor(yuv, yuv, cv::COLOR_Lab2BGR);
+            cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
+
             //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
             cv::cuda::GpuMat in_device = maskImage(mask_device);
-            //cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
+
+            GpuMat fgMat;
+            std::vector<Mat> features;
+            //cv::cuda::cvtColor(in_device, fgMat, cv::COLOR_GRAY2BGR);
+            //fgd->apply(fgMat, fgMat);
+            //fgd->getForegroundRegions(features);
+
+            //cout << features.size() << endl;
+
             cuda::resize(in_device, resized_device, Size(M,N));
             cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
             filter->apply(resized_device, resized_device);
+            // mog already does gaussion
             mog2->apply(resized_device, out_device);
+
+
             //changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
             cv::cuda::threshold(out_device, out_device, 127, 255, CV_THRESH_BINARY);
 
@@ -252,6 +277,7 @@ int main( int argc, char** argv )
             filter->apply(out_device, out_device);
 
 
+
             GpuMat thresh;
             //cv::cuda::threshold(out_device, thresh, 127, 255, 0);
             Mat result_host(out_device);
@@ -259,7 +285,7 @@ int main( int argc, char** argv )
 
 
 
-            Mat back_host(resized_device);
+            Mat back_host(yuv);
 
             Mat result_cropped;
             // Detect motion in window
@@ -268,20 +294,29 @@ int main( int argc, char** argv )
             Scalar color(0,255,255);
             cv::Scalar mean, std;
 			Mat in_device_cpu;
+			cv::cuda::cvtColor(in_device, in_device, cv::COLOR_GRAY2BGR);
             in_device.download(in_device_cpu);
             cv::cuda::meanStdDev(out_device, mean, std);
             number_of_changes = detectMotion(out_device, in_device_cpu, result_cropped,  x_start, x_stop, y_start, y_stop, 20, color, std);
             int contourSize = getContourSize(result_host);
             cout << "number of changes" << number_of_changes;
             cout << "stddev=" << std[0] << "|| number of changes=" << number_of_changes << "|| Contour=" << contourSize<< endl;
-            if(N_FRAME > 50 && number_of_changes > 300 && contourSize > 100 )
+
+            int captureCount=0;
+            if((N_FRAME > 50 && number_of_changes > 300 && contourSize > 100) || captureCount > 0 )
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
                 if(number_of_sequence % 1 == 0){
-					cout << "writing image to disk" << inframe.rows << endl;
-					saveImg( in_device_cpu , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+					//cout << "writing image to disk" << inframe.rows << endl;
+					//saveImg( in_device_cpu , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
+                if(captureCount  == 0){
+                	captureCount = 5;
+                }else{
+                	captureCount--;
+                }
+
                 number_of_sequence++;
             }else
             {

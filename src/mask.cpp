@@ -65,13 +65,19 @@ cv::cuda::GpuMat doMask(cv::cuda::GpuMat srci, cv::cuda::GpuMat d, bool preview=
 	}
 
 	if(mask.rows == 0){
-		Mat tmp_mask = Mat::zeros(srci.size(), CV_8UC1);
+		Mat tmp_mask(srci.size(), CV_8UC1);
+		tmp_mask= Mat::zeros(srci.size(), CV_8UC1);
 		fillPoly(tmp_mask, pts, Scalar(255, 255, 255), 8, 0);
 		cout <<  pts << endl;
 		mask.upload(tmp_mask);
+		cout << tmp_mask.size() << tmp_mask.type() << endl;
 
 	}
-	cv::cuda::bitwise_and(srci, srci, desti, mask);
+
+	cout << mask.size() << mask.type() << endl;
+	cv::cuda::GpuMat gray;
+	cv::cuda::cvtColor(srci, gray, cv::COLOR_BGR2GRAY);
+	cv::cuda::bitwise_and(gray, gray, desti, mask);
 	finalImg = desti;
 	if(preview){
 		Mat mTmp, fTmp;
@@ -82,7 +88,7 @@ cv::cuda::GpuMat doMask(cv::cuda::GpuMat srci, cv::cuda::GpuMat d, bool preview=
 		imshow("Source", img1);
 	}
 
-	return desti;
+	return mask;
 }
 
 cv::cuda::GpuMat doMask(cv::cuda::GpuMat srci, bool preview=true) {
@@ -149,7 +155,7 @@ void mouseHandler(int event, int x, int y, int, void*)
 
 }
 
-cv::cuda::GpuMat maskImage(cv::cuda::GpuMat srci)
+cv::cuda::GpuMat getMask(cv::cuda::GpuMat srci)
 {
 	srcDevice = srci;
 	if(found)
@@ -165,26 +171,26 @@ cv::cuda::GpuMat maskImage(cv::cuda::GpuMat srci)
 		return finalImg;
 
 	cout << "returning" << endl;
-    return finalImg;
+    return mask;
 }
 
 
-//int main(int argc, char **argv) {
-//
-//    CommandLineParser parser(argc, argv, "{@input | lena.jpg | input image}");
-//    parser.about("This program demonstrates using mouse events\n");
-//    parser.printMessage();
-//    cout << "\n\tleft mouse button - set a point to create mask shape\n"
-//        "\tright mouse button - create mask from points\n"
-//        "\tmiddle mouse button - reset\n";
-//    String input_image = parser.get<String>("@input");
-//
-//    src = imread(samples::findFile(input_image));
-//
-//    cv::cvtColor(src, src, cv::COLOR_BGR2GRAY);
-//
-//    srcDevice.upload(src);
-//
-//	maskImage(srcDevice);
-//}
+int main2(int argc, char **argv) {
+
+    CommandLineParser parser(argc, argv, "{@input | lena.jpg | input image}");
+    parser.about("This program demonstrates using mouse events\n");
+    parser.printMessage();
+    cout << "\n\tleft mouse button - set a point to create mask shape\n"
+        "\tright mouse button - create mask from points\n"
+        "\tmiddle mouse button - reset\n";
+    String input_image = parser.get<String>("@input");
+
+    src = imread(samples::findFile(input_image));
+
+    //cv::cvtColor(src, src, cv::COLOR_BGR2GRAY);
+
+    srcDevice.upload(src);
+
+	getMask(srcDevice);
+}
 

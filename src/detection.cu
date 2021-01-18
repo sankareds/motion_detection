@@ -41,7 +41,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -60,7 +60,7 @@ int main( int argc, char** argv )
 
     Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
     GpuMat resized_device(N*0.5, M*0.5, CV_8UC3, Scalar(0,0,0)), out_device;
-    Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
+    Mat element = getStructuringElement( MORPH_RECT, Size(2, 2), Point( 1, 1) );
     Mat masked;
     Mat inframe;
 
@@ -110,7 +110,15 @@ int main( int argc, char** argv )
         {
             bool bSuccesss = cap.read(inframe);
 
+            if (!bSuccesss)
+            {
+            	continue;
+            }
 
+            if (inframe.empty())
+            {
+            	continue;
+            }
 
             GpuMat in_device, mask_device, yuv(N, M, CV_8UC3, Scalar(0,0,0));
             mask_device.upload(inframe);
@@ -121,19 +129,15 @@ int main( int argc, char** argv )
 
             in_device.setTo(Scalar(0,0,0));
             mask_device.copyTo(in_device, mask);
-            cuda::resize(in_device, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
+
 
 
             //cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
             // mask area
             //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
 
-
-//            cv::Ptr< cv::cuda::Filter > filter3 = cv::cuda::createSobelFilter(CV_8UC3, CV_8UC3, 1, 1, 1, 1, cv::BORDER_DEFAULT);
-//            filter3->apply(in_device, in_device);
-
             // normalization
-            cv::cuda::cvtColor(resized_device, yuv, cv::COLOR_BGR2YUV);
+            cv::cuda::cvtColor(in_device, yuv, cv::COLOR_BGR2YUV);
             std::vector<GpuMat> channels;
             cv::cuda::split(yuv, channels);
 			clahe->apply(channels[0], channels[0]);
@@ -169,17 +173,29 @@ int main( int argc, char** argv )
 
 //            cout << in_device.size() << resized_device.size() << Size(M,N) << endl;
 
-            mog2->apply(yuv, out_device);
+            cuda::resize(yuv, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
+
+            mog2->apply(resized_device, out_device);
 
 
+            cv::Ptr<cv::cuda::Filter> filter = cuda::createMorphologyFilter(CV_MOP_ERODE, out_device.type(), element);
+            filter->apply(out_device, out_device);
+
+            GpuMat v, h, magnitude;
+			cv::Ptr< cv::cuda::Filter > filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 1, 0, 3, 1, cv::BORDER_DEFAULT);
+			filter3->apply(out_device, v);
+			filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 0, 1, 3, 1, cv::BORDER_DEFAULT);
+			filter3->apply(out_device, h);
+			cv::cuda::magnitude(v, h, magnitude);
+			magnitude.convertTo(out_device, CV_8UC1, 255);
 
             //changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
-            //cv::cuda::threshold(out_device, out_device, 127, 255, CV_THRESH_BINARY);
+            //cv::cuda::threshold(magnitude, magnitude, 254, 255, CV_THRESH_BINARY);
 
 
 
-            cv::Ptr<cv::cuda::Filter> filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
-            filter->apply(out_device, out_device);
+            //filter = cuda::createMorphologyFilter(CV_MOP_ERODE, out_device.type(), element);
+            //filter->apply(magnitude, out_device);
 
 
 //            cv::Ptr< cv::cuda::Filter > filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_8UC1, 1, 1, 1, 1);
@@ -215,9 +231,10 @@ int main( int argc, char** argv )
                 }
             }
 
-            Mat in_host(in_device);
+            //Mat in_host(in_device);
             Mat processed(resized_device);
             Mat result_cropped;
+            Mat mag_cpu(magnitude);
             // Detect motion in window
             int x_start = 0, x_stop = inframe.cols;
             int y_start = 0, y_stop = inframe.rows;
@@ -225,7 +242,7 @@ int main( int argc, char** argv )
             cv::Scalar mean, std;
 			Mat in_device_cpu;
             //in_device.download(in_device_cpu);
-            cv::cuda::meanStdDev(out_device, mean, std);
+            //cv::cuda::meanStdDev(out_device, mean, std);
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
 
             int captureCount=0;
@@ -244,8 +261,8 @@ int main( int argc, char** argv )
                 number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);
-            cv::imshow("Input",in_host);
-            cv::imshow("Processed",processed);
+            cv::imshow("Input",processed);
+            cv::imshow("Processed",mag_cpu);
     		if((char)cv::waitKey(1) == (char)27)
     			break;
             N_FRAME++;

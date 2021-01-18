@@ -49,6 +49,7 @@ int main( int argc, char** argv )
         return -1;
     }
 
+    bool bSuccess = cap.read(img);
     int scale = 1;
     Size s = img.size(); //calcolo dimensioni frame
     cout<<"Dimensioni originali "<<s.width<<" x "<<s.height<<endl;
@@ -58,7 +59,7 @@ int main( int argc, char** argv )
 
 
     Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
-    GpuMat resized_device(N, M, CV_8UC3, Scalar(0,0,0)), out_device;
+    GpuMat resized_device(N*0.5, M*0.5, CV_8UC3, Scalar(0,0,0)), out_device;
     Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
     Mat masked;
     Mat inframe;
@@ -120,6 +121,8 @@ int main( int argc, char** argv )
 
             in_device.setTo(Scalar(0,0,0));
             mask_device.copyTo(in_device, mask);
+            cuda::resize(in_device, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
+
 
             //cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
             // mask area
@@ -130,7 +133,7 @@ int main( int argc, char** argv )
 //            filter3->apply(in_device, in_device);
 
             // normalization
-            cv::cuda::cvtColor(in_device, yuv, cv::COLOR_BGR2YUV);
+            cv::cuda::cvtColor(resized_device, yuv, cv::COLOR_BGR2YUV);
             std::vector<GpuMat> channels;
             cv::cuda::split(yuv, channels);
 			clahe->apply(channels[0], channels[0]);
@@ -140,11 +143,11 @@ int main( int argc, char** argv )
 //			cv::cuda::equalizeHist(channels[1], channels[1]);
 //			cv::cuda::equalizeHist(channels[2], channels[2]);
 
-			cv::cuda::threshold(channels[0], channels[0], 160, 255, CV_THRESH_BINARY);
+			cv::cuda::threshold(channels[0], channels[0], 190, 255, CV_THRESH_BINARY);
             cv::cuda::merge(channels, yuv);
             //clahe->apply(yuv, yuv);
             //cv::cuda::equalizeHist(yuv, yuv);
-            cv::cuda::cvtColor(yuv, in_device, cv::COLOR_YUV2BGR);
+            cv::cuda::cvtColor(yuv, yuv, cv::COLOR_YUV2BGR);
             //cv::cuda::threshold(yuv, yuv, 127, 255, CV_THRESH_BINARY);
 
 
@@ -154,18 +157,19 @@ int main( int argc, char** argv )
 
 
 
-            //cuda::resize(yuv, resized_device, Size(M,N));
+
             //cv::cuda::cvtColor(yuv, resized_device, cv::COLOR_BGR2GRAY);
-            GpuMat blurred;
-            in_device.copyTo(resized_device);
-            cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(0, 0),3);
-            filter->apply(resized_device, blurred);
+//            GpuMat blurred;
+//            in_device.copyTo(resized_device);
+//            cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(0, 0),3);
+//            filter->apply(resized_device, blurred);
+//
+//            cv::cuda::addWeighted(resized_device, 1.5, blurred, -0.5, 0, blurred);
+//            // mog already does gaussion
 
-            cv::cuda::addWeighted(resized_device, 1.5, blurred, -0.5, 0, blurred);
-            // mog already does gaussion
+//            cout << in_device.size() << resized_device.size() << Size(M,N) << endl;
 
-
-            mog2->apply(resized_device, out_device);
+            mog2->apply(yuv, out_device);
 
 
 
@@ -174,7 +178,7 @@ int main( int argc, char** argv )
 
 
 
-            filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
+            cv::Ptr<cv::cuda::Filter> filter = cuda::createMorphologyFilter(CV_MOP_OPEN, out_device.type(), element);
             filter->apply(out_device, out_device);
 
 
@@ -191,6 +195,11 @@ int main( int argc, char** argv )
             GpuMat fgMat(N, M, CV_8UC1, Scalar(0));;
             std::vector<Mat> features;
             vector<Vec4i> hierarchy;
+            Rect boundRect;
+            vector<Point> poly;
+            Point2f centers;
+            float radius;
+
 //            fgd->apply(out_device, fgMat);
 //            fgd->getForegroundRegions(features);
         	cv::findContours(result_host, features, hierarchy, CV_RETR_CCOMP,
@@ -199,10 +208,12 @@ int main( int argc, char** argv )
             for (auto it = begin (features); it != end (features); ++it) {
                 int area = it->rows * it->cols;
                 if(area > contourSize){
+                	vector<Point> v(it->begin<Point>(), it->end<Point>());
+                	cv::approxPolyDP(v, poly, 10, true);
                 	contourSize = area;
+                	boundRect = cv::boundingRect(poly);
                 }
             }
-
 
             Mat in_host(in_device);
             Mat processed(resized_device);
@@ -215,16 +226,16 @@ int main( int argc, char** argv )
 			Mat in_device_cpu;
             //in_device.download(in_device_cpu);
             cv::cuda::meanStdDev(out_device, mean, std);
-            cout << "number of changes" << number_of_changes;
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
 
             int captureCount=0;
-            if((N_FRAME > 100 && number_of_changes < 100 && contourSize > 100 && contourSize < 500 ))
+            if((N_FRAME > 100 && features.size() < 100 && contourSize > 100 && contourSize < 500 ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
-                if(number_of_sequence % 2 == 0){
+                if(number_of_sequence % 1 == 0){
 					//cout << "writing image to disk" << inframe.rows << endl;
-					saveImg( inframe , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+                	rectangle(processed, boundRect, color, 1);
+					saveImg( processed , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
                 number_of_sequence++;
@@ -233,7 +244,7 @@ int main( int argc, char** argv )
                 number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);
-            cv::imshow("Input",inframe);
+            cv::imshow("Input",in_host);
             cv::imshow("Processed",processed);
     		if((char)cv::waitKey(1) == (char)27)
     			break;

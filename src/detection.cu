@@ -41,7 +41,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -60,7 +60,7 @@ int main( int argc, char** argv )
 
     Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
     GpuMat resized_device(N*0.5, M*0.5, CV_8UC3, Scalar(0,0,0)), out_device;
-    Mat element = getStructuringElement( MORPH_RECT, Size(2, 2), Point( 1, 1) );
+    Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
     Mat masked;
     Mat inframe;
 
@@ -100,6 +100,9 @@ int main( int argc, char** argv )
     Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(300,200));
     //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
+
+    int contourThresh = 100;
+
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -130,6 +133,7 @@ int main( int argc, char** argv )
             in_device.setTo(Scalar(0,0,0));
             mask_device.copyTo(in_device, mask);
 
+            cuda::resize(in_device, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
 
 
             //cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
@@ -137,7 +141,7 @@ int main( int argc, char** argv )
             //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
 
             // normalization
-            cv::cuda::cvtColor(in_device, yuv, cv::COLOR_BGR2YUV);
+            cv::cuda::cvtColor(resized_device, yuv, cv::COLOR_BGR2YUV);
             std::vector<GpuMat> channels;
             cv::cuda::split(yuv, channels);
 			clahe->apply(channels[0], channels[0]);
@@ -173,9 +177,9 @@ int main( int argc, char** argv )
 
 //            cout << in_device.size() << resized_device.size() << Size(M,N) << endl;
 
-            cuda::resize(yuv, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
 
-            mog2->apply(resized_device, out_device);
+
+            mog2->apply(yuv, out_device);
 
 
             cv::Ptr<cv::cuda::Filter> filter = cuda::createMorphologyFilter(CV_MOP_ERODE, out_device.type(), element);
@@ -206,6 +210,9 @@ int main( int argc, char** argv )
             //cv::cuda::threshold(out_device, out_device, 100, 255, 0);
             //cv::cuda::threshold(fgMat, fgMat, 100, 255, 0);
             Mat result_host(out_device);
+            Mat resized_host(resized_device);
+            Mat processed(yuv);
+
 
             //foreground feature detection
             GpuMat fgMat(N, M, CV_8UC1, Scalar(0));;
@@ -216,6 +223,7 @@ int main( int argc, char** argv )
             Point2f centers;
             float radius;
 
+
 //            fgd->apply(out_device, fgMat);
 //            fgd->getForegroundRegions(features);
         	cv::findContours(result_host, features, hierarchy, CV_RETR_CCOMP,
@@ -223,7 +231,7 @@ int main( int argc, char** argv )
             int contourSize=0;
             for (auto it = begin (features); it != end (features); ++it) {
                 int area = it->rows * it->cols;
-                if(area > contourSize){
+                if(area > contourSize && area > contourThresh){
                 	vector<Point> v(it->begin<Point>(), it->end<Point>());
                 	cv::approxPolyDP(v, poly, 10, true);
                 	contourSize = area;
@@ -232,9 +240,7 @@ int main( int argc, char** argv )
             }
 
             //Mat in_host(in_device);
-            Mat processed(resized_device);
-            Mat result_cropped;
-            Mat mag_cpu(magnitude);
+
             // Detect motion in window
             int x_start = 0, x_stop = inframe.cols;
             int y_start = 0, y_stop = inframe.rows;
@@ -246,13 +252,13 @@ int main( int argc, char** argv )
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
 
             int captureCount=0;
-            if((N_FRAME > 100 && features.size() < 100 && contourSize > 100 && contourSize < 500 ))
+            if((N_FRAME > 100 && features.size() < 100 && contourSize > contourThresh && contourSize < 500 ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
                 if(number_of_sequence % 1 == 0){
 					//cout << "writing image to disk" << inframe.rows << endl;
-                	rectangle(processed, boundRect, color, 1);
-					saveImg( processed , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+                	rectangle(resized_host, boundRect, color, 1);
+					saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
                 number_of_sequence++;
@@ -261,8 +267,8 @@ int main( int argc, char** argv )
                 number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);
-            cv::imshow("Input",processed);
-            cv::imshow("Processed",mag_cpu);
+            cv::imshow("Input",resized_host);
+            cv::imshow("Processed",processed);
     		if((char)cv::waitKey(1) == (char)27)
     			break;
             N_FRAME++;

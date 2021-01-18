@@ -41,7 +41,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=15/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -96,7 +96,8 @@ int main( int argc, char** argv )
 
     Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(700,16,false);
     Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
-    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(200, Size(8,8));
+    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(300,200));
+    //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -129,21 +130,21 @@ int main( int argc, char** argv )
 //            filter3->apply(in_device, in_device);
 
             // normalization
-//            cv::cuda::cvtColor(in_device, yuv, cv::COLOR_BGR2YUV);
-//            std::vector<GpuMat> channels;
-//            cv::cuda::split(yuv, channels);
-////			cv::cuda::equalizeHist(channels[0], channels[0]);
-////			cv::cuda::equalizeHist(channels[1], channels[1]);
-////			cv::cuda::equalizeHist(channels[2], channels[2]);
-//			clahe->apply(channels[0], channels[0]);
+            cv::cuda::cvtColor(in_device, yuv, cv::COLOR_BGR2YUV);
+            std::vector<GpuMat> channels;
+            cv::cuda::split(yuv, channels);
+			clahe->apply(channels[0], channels[0]);
 //			clahe->apply(channels[1], channels[1]);
 //			clahe->apply(channels[2], channels[2]);
+//			cv::cuda::equalizeHist(channels[0], channels[0]);
+//			cv::cuda::equalizeHist(channels[1], channels[1]);
+//			cv::cuda::equalizeHist(channels[2], channels[2]);
 
-
-            //cv::cuda::merge(channels, yuv);
+			cv::cuda::threshold(channels[0], channels[0], 160, 255, CV_THRESH_BINARY);
+            cv::cuda::merge(channels, yuv);
             //clahe->apply(yuv, yuv);
             //cv::cuda::equalizeHist(yuv, yuv);
-            //cv::cuda::cvtColor(yuv, yuv, cv::COLOR_YUV2BGR);
+            cv::cuda::cvtColor(yuv, in_device, cv::COLOR_YUV2BGR);
             //cv::cuda::threshold(yuv, yuv, 127, 255, CV_THRESH_BINARY);
 
 
@@ -155,9 +156,12 @@ int main( int argc, char** argv )
 
             //cuda::resize(yuv, resized_device, Size(M,N));
             //cv::cuda::cvtColor(yuv, resized_device, cv::COLOR_BGR2GRAY);
+            GpuMat blurred;
             in_device.copyTo(resized_device);
-            cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(3, 3),0);
-            filter->apply(resized_device, resized_device);
+            cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(0, 0),3);
+            filter->apply(resized_device, blurred);
+
+            cv::cuda::addWeighted(resized_device, 1.5, blurred, -0.5, 0, blurred);
             // mog already does gaussion
 
 
@@ -215,27 +219,21 @@ int main( int argc, char** argv )
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
 
             int captureCount=0;
-            if((N_FRAME > 50 && contourSize > 500 ))
+            if((N_FRAME > 100 && number_of_changes < 100 && contourSize > 100 && contourSize < 500 ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
-                if(number_of_sequence % 1 == 0){
+                if(number_of_sequence % 2 == 0){
 					//cout << "writing image to disk" << inframe.rows << endl;
-					saveImg( processed , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+					saveImg( inframe , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
-                if(captureCount  == 0){
-                	captureCount = 5;
-                }else{
-                	captureCount--;
-                }
-
                 number_of_sequence++;
             }else
             {
                 number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);
-            cv::imshow("Input",in_host);
+            cv::imshow("Input",inframe);
             cv::imshow("Processed",processed);
     		if((char)cv::waitKey(1) == (char)27)
     			break;

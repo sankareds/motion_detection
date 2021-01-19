@@ -41,7 +41,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -58,11 +58,12 @@ int main( int argc, char** argv )
     cout<<"Dimensioni elaborazione "<<M<<" x "<<N<<endl;
 
 
+    float resize_ratio=0.8;
     Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
-    GpuMat resized_device(N*0.5, M*0.5, CV_8UC3, Scalar(0,0,0)), out_device;
+    GpuMat resized_device(N*resize_ratio, M*resize_ratio, CV_8UC3, Scalar(0,0,0)), out_device;
     Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
     Mat masked;
-    Mat inframe;
+
 
 
     //cap.set(15, -8.0);
@@ -83,6 +84,7 @@ int main( int argc, char** argv )
     cudaMallocManaged(&unified_ptr, frameByteSize);
     cv::cuda::GpuMat mask,mask_device(height, width, CV_8UC3, unified_ptr);
     Mat cpu_in_device(height, width, CV_8UC3, unified_ptr);
+    Mat inframe(height, width, CV_8UC4);
 
     int number_of_changes, number_of_sequence=0;
     const string DIR = "/tmp/motion/pics/"; // directory where the images will be stored
@@ -95,13 +97,14 @@ int main( int argc, char** argv )
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
 
 
-    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(700,16,false);
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,16,false);
     Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
-    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(300,200));
+    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(M/4,N/4));
     //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
 
     int contourThresh = 100;
+    int prevTotContour = 0;
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -123,7 +126,7 @@ int main( int argc, char** argv )
             	continue;
             }
 
-            GpuMat in_device, mask_device, yuv(N, M, CV_8UC3, Scalar(0,0,0));
+            GpuMat in_device(height, width, CV_8UC3),mask_device, yuv(N, M, CV_8UC3, Scalar(0,0,0));
             mask_device.upload(inframe);
 
             if(mask.rows == 0){
@@ -133,7 +136,7 @@ int main( int argc, char** argv )
             in_device.setTo(Scalar(0,0,0));
             mask_device.copyTo(in_device, mask);
 
-            cuda::resize(in_device, resized_device, Size(M*0.5,N*0.5),0,0,cv::INTER_CUBIC);
+            cuda::resize(in_device, resized_device, Size(M*resize_ratio,N*resize_ratio),0,0,cv::INTER_CUBIC);
 
 
             //cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
@@ -209,8 +212,23 @@ int main( int argc, char** argv )
             GpuMat thresh;
             //cv::cuda::threshold(out_device, out_device, 100, 255, 0);
             //cv::cuda::threshold(fgMat, fgMat, 100, 255, 0);
+
+
+            cout << resized_device.type() << endl;
+            GpuMat img2d;
+            float kdata[]= {
+            		0, -1, 0,
+					-1, 7, -1,
+					0, -1, 0,
+            };
+
+            Mat k(3, 3, CV_32F, kdata);
+            cv::cuda::cvtColor(resized_device, img2d, cv::COLOR_BGR2RGBA, 4);
+            filter = cuda::createLinearFilter(img2d.type(), -1, k);
+            filter->apply(img2d, img2d);
+
             Mat result_host(out_device);
-            Mat resized_host(resized_device);
+            Mat resized_host(img2d);
             Mat processed(yuv);
 
 
@@ -250,20 +268,23 @@ int main( int argc, char** argv )
             //in_device.download(in_device_cpu);
             //cv::cuda::meanStdDev(out_device, mean, std);
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
-
+            int totContour = features.size() ;
             int captureCount=0;
-            if((N_FRAME > 100 && features.size() < 100 && contourSize > contourThresh && contourSize < 500 ))
+            if((N_FRAME > 100 && totContour < 1000 && contourSize > contourThresh && contourSize < 3000 ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
-                if(number_of_sequence % 1 == 0){
-					//cout << "writing image to disk" << inframe.rows << endl;
+                if(totContour >= prevTotContour){
+					cout << "writing image to disk" << inframe.rows << endl;
+
                 	rectangle(resized_host, boundRect, color, 1);
 					saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }
+                prevTotContour = totContour;
                 number_of_sequence++;
             }else
             {
+            	prevTotContour = 0;
                 number_of_sequence = 0;
             }
             cv::imshow("Output",result_host);

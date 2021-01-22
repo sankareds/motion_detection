@@ -41,6 +41,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
+
     const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
@@ -62,6 +63,10 @@ int main( int argc, char** argv )
     Mat resized (N, M, CV_8UC1, Scalar(0,0,0)); //resized image
     GpuMat resized_device(N*resize_ratio, M*resize_ratio, CV_8UC3, Scalar(0,0,0)), out_device;
     Mat element = getStructuringElement( MORPH_RECT, Size(3, 3), Point( 1, 1) );
+    Mat dilateElement = getStructuringElement( MORPH_RECT, Size(20, 20), Point( 1, 1) );
+    Mat erodeElement = getStructuringElement( MORPH_RECT, Size(21, 21), Point( 1, 1) );
+
+
     Mat masked;
 
 
@@ -97,13 +102,17 @@ int main( int argc, char** argv )
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
 
 
-    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,16,false);
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,64,false);
     Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
-    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(M/4,N/4));
+    Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(M,N));
     //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
 
-    int contourThresh = 100;
+    //saves the image only when min contourSize and
+    int contourMinSizeThresh = 20;
+    int contourLengthThreshold = 5;
+    cv::Ptr<cv::cuda::Filter> filter;
+
     int prevTotContour = 0;
 
     cudaEvent_t start, stop;
@@ -148,18 +157,27 @@ int main( int argc, char** argv )
             std::vector<GpuMat> channels;
             cv::cuda::split(yuv, channels);
 			clahe->apply(channels[0], channels[0]);
-//			clahe->apply(channels[1], channels[1]);
-//			clahe->apply(channels[2], channels[2]);
 //			cv::cuda::equalizeHist(channels[0], channels[0]);
 //			cv::cuda::equalizeHist(channels[1], channels[1]);
-//			cv::cuda::equalizeHist(channels[2], channels[2]);
+			//cv::cuda::normalize(channels[0], channels[0], 190, 255, cv::NORM_MINMAX, yuv.type());
+			clahe->apply(channels[1], channels[1]);
+			clahe->apply(channels[2], channels[2]);
 
-			cv::cuda::threshold(channels[0], channels[0], 190, 255, CV_THRESH_BINARY);
+//			cv::cuda::equalizeHist(channels[1], channels[1]);
+//			cv::cuda::equalizeHist(channels[2], channels[2]);
+			//cv::cuda::normalize(channels[0], channels[0], 0, 255, cv::NORM_MINMAX, yuv.type());
+
+			cv::cuda::threshold(channels[0], channels[0], 180, 0, CV_THRESH_TRUNC);
+//			cv::cuda::threshold(channels[1], channels[1], 190, 0, CV_THRESH_TRUNC);
             cv::cuda::merge(channels, yuv);
+            GpuMat grey;
+
             //clahe->apply(yuv, yuv);
             //cv::cuda::equalizeHist(yuv, yuv);
             cv::cuda::cvtColor(yuv, yuv, cv::COLOR_YUV2BGR);
+            cv::cuda::cvtColor(yuv, grey, cv::COLOR_BGR2GRAY);
             //cv::cuda::threshold(yuv, yuv, 127, 255, CV_THRESH_BINARY);
+
 
 
 
@@ -181,20 +199,34 @@ int main( int argc, char** argv )
 //            cout << in_device.size() << resized_device.size() << Size(M,N) << endl;
 
 
+            GpuMat subtracted;
+            mog2->apply(yuv, subtracted);
 
-            mog2->apply(yuv, out_device);
+
+            GpuMat morphed;
 
 
-            cv::Ptr<cv::cuda::Filter> filter = cuda::createMorphologyFilter(CV_MOP_ERODE, out_device.type(), element);
+            //reduce the noise
+            filter = cuda::createMorphologyFilter(CV_MOP_ERODE, subtracted.type(), element, Point(-1, -1), 1);
+            filter->apply(subtracted, out_device);
+
+            //amplify the moving objects
+            filter = cuda::createMorphologyFilter(CV_MOP_DILATE, subtracted.type(), dilateElement, Point(-1, -1), 3);
             filter->apply(out_device, out_device);
+//
+//            //eliminate small condours
+//            filter = cuda::createMorphologyFilter(CV_MOP_ERODE, subtracted.type(), erodeElement, Point(-1, -1), 1);
+//            filter->apply(out_device, out_device);
 
-            GpuMat v, h, magnitude;
-			cv::Ptr< cv::cuda::Filter > filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 1, 0, 3, 1, cv::BORDER_DEFAULT);
-			filter3->apply(out_device, v);
-			filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 0, 1, 3, 1, cv::BORDER_DEFAULT);
-			filter3->apply(out_device, h);
-			cv::cuda::magnitude(v, h, magnitude);
-			magnitude.convertTo(out_device, CV_8UC1, 255);
+
+
+//            GpuMat v, h, magnitude;
+//			cv::Ptr< cv::cuda::Filter > filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 1, 0, 1, 1, cv::BORDER_DEFAULT);
+//			filter3->apply(morphed, v);
+//			filter3 = cv::cuda::createSobelFilter(CV_8UC1, CV_32F, 0, 1, 1, 1, cv::BORDER_DEFAULT);
+//			filter3->apply(morphed, h);
+//			cv::cuda::magnitude(v, h, magnitude);
+//			magnitude.convertTo(out_device, CV_8UC1, 255);
 
             //changeDetection<<<M, N>>>(resized_device, buffer_device, disc_device, out_device, k_device, buff_size, old_disc_device);
             //cv::cuda::threshold(magnitude, magnitude, 254, 255, CV_THRESH_BINARY);
@@ -218,7 +250,7 @@ int main( int argc, char** argv )
             GpuMat img2d;
             float kdata[]= {
             		0, -1, 0,
-					-1, 7, -1,
+					-1, 5, -1,
 					0, -1, 0,
             };
 
@@ -230,6 +262,8 @@ int main( int argc, char** argv )
             Mat result_host(out_device);
             Mat resized_host(img2d);
             Mat processed(yuv);
+            Mat morphed_cpu(morphed);
+//            Mat magnitude_cpu(magnitude);
 
 
             //foreground feature detection
@@ -249,7 +283,7 @@ int main( int argc, char** argv )
             int contourSize=0;
             for (auto it = begin (features); it != end (features); ++it) {
                 int area = it->rows * it->cols;
-                if(area > contourSize && area > contourThresh){
+                if(area > contourSize && area > contourMinSizeThresh){
                 	vector<Point> v(it->begin<Point>(), it->end<Point>());
                 	cv::approxPolyDP(v, poly, 10, true);
                 	contourSize = area;
@@ -270,7 +304,7 @@ int main( int argc, char** argv )
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
             int totContour = features.size() ;
             int captureCount=0;
-            if((N_FRAME > 100 && totContour < 1000 && contourSize > contourThresh && contourSize < 3000 ))
+            if((N_FRAME > 100 && totContour < contourLengthThreshold && contourSize > contourMinSizeThresh && contourSize < 50 ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
                 if(totContour >= prevTotContour){
@@ -290,6 +324,8 @@ int main( int argc, char** argv )
             cv::imshow("Output",result_host);
             cv::imshow("Input",resized_host);
             cv::imshow("Processed",processed);
+//            cv::imshow("Morphed",morphed_cpu);
+//            cv::imshow("Magnitude",magnitude_cpu);
     		if((char)cv::waitKey(1) == (char)27)
     			break;
             N_FRAME++;

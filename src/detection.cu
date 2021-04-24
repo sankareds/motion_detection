@@ -112,8 +112,8 @@ int main( int argc, char** argv )
 
     //saves the image only when min contourSize and
 
-    // front : 50, back: 25
-    int contourMinSizeThresh = 25;
+    // front : 50, back: 20
+    int contourMinSizeThresh = 20;
     int contourMaxSizeThresh = 500;
     int contourLengthThreshold = 30;
     int motionLenthThreshold = 1;
@@ -264,17 +264,18 @@ int main( int argc, char** argv )
 
 
             cout << resized_device.type() << endl;
-            GpuMat img2d;
-            float kdata[]= {
-            		0, -1, 0,
-					-1, 5, -1,
-					0, -1, 0,
-            };
 
-            Mat k(3, 3, CV_32F, kdata);
-            cv::cuda::cvtColor(resized_device, img2d, cv::COLOR_BGR2RGBA, 4);
-            filter = cuda::createLinearFilter(img2d.type(), -1, k);
-            filter->apply(img2d, img2d);
+//            GpuMat img2d;
+//            float kdata[]= {
+//            		0, -1, 0,
+//					-1, 5, -1,
+//					0, -1, 0,
+//            };
+//
+//            Mat k(3, 3, CV_32F, kdata);
+//            cv::cuda::cvtColor(resized_device, img2d, cv::COLOR_BGR2RGBA, 4);
+//            filter = cuda::createLinearFilter(img2d.type(), -1, k);
+//            filter->apply(img2d, img2d);
 
             Mat result_host(out_device);
             Mat resized_host(resized_device);
@@ -325,8 +326,23 @@ int main( int argc, char** argv )
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
                 if(contourSize >= prevContourSize - (0.50 * prevContourSize) && motionFrames.size() <= motionLenthThreshold){
-                	rectangle(resized_host, boundRect, color, 1);
-					motionFrames.push_back(resized_host);
+
+                	Rect cropped_rect(boundRect);
+                	int cropped_threshold = 250;
+					if(boundRect.x - cropped_threshold > 0) cropped_rect.x = boundRect.x - cropped_threshold;
+					if(boundRect.y - cropped_threshold > 0) cropped_rect.y = boundRect.y - cropped_threshold;
+					if(boundRect.width+cropped_threshold < resized_host.cols-1) cropped_rect.width = boundRect.width + cropped_threshold;
+					if(boundRect.height+cropped_threshold < resized_host.rows-1) cropped_rect.height = boundRect.height + cropped_threshold;
+
+					cout << boundRect.x << boundRect.y << boundRect.width << boundRect.height << endl ;
+					cout << cropped_rect.x << cropped_rect.y << cropped_rect.width << cropped_rect.height << endl ;
+
+					Mat cropped = resized_host(cropped_rect);
+					Mat result_cropped;
+					cropped.copyTo(result_cropped);
+					//motionFrames.push_back(resized_host);
+					motionFrames.push_back(result_cropped);
+					rectangle(resized_host, boundRect, color, 1);
 					//saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }else{

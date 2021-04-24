@@ -26,16 +26,16 @@ using namespace std;
 using namespace cv;
 
 cv::cuda::GpuMat srcDevice, mask, finalImg;
-bool found = true;
+bool found = false;
 
 Mat src, img1;
 
 Point point;
-//vector<Point> pts;
+vector<Point> pts;
 
-vector<Point> pts= { Point(65,100) , Point(569,60), Point(906,193),
-		Point(1223,349), Point(1218,613), Point(1192,698), Point(54,685),
-		Point(32,225), Point(64,103) };
+//vector<Point> pts= { Point(65,100) , Point(569,60), Point(906,193),
+//		Point(1223,349), Point(1218,613), Point(1192,698), Point(54,685),
+//		Point(32,225), Point(64,103) };
 
 //[65, 100;
 // 569, 60;

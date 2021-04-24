@@ -32,6 +32,8 @@ int detectMotion(const GpuMat &, Mat &, Mat &,
 bool saveImg(Mat, const string, const string, const char *, const char *);
 
 
+
+
 int main( int argc, char** argv )
 {
     system("clear");
@@ -42,7 +44,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam2/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam4/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -102,23 +104,27 @@ int main( int argc, char** argv )
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
 
 
-    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,64,false);
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(100,16,false);
     Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
     Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(M,N));
     //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
 
     //saves the image only when min contourSize and
-    int contourMinSizeThresh = 20;
-    int contourLengthThreshold = 5;
+    int contourMinSizeThresh = 50;
+    int contourMaxSizeThresh = 500;
+    int contourLengthThreshold = 30;
+    int motionLenthThreshold = 2;
     cv::Ptr<cv::cuda::Filter> filter;
 
-    int prevTotContour = 0;
+    int prevContourSize = 0;
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord( start, 0 );
+
+    std::vector<Mat> motionFrames;
 
     while(1)
     {
@@ -139,45 +145,55 @@ int main( int argc, char** argv )
             mask_device.upload(inframe);
 
             if(mask.rows == 0){
-            	mask = getMask(mask_device);
+            	Mat tMask;
+            	tMask = cv::imread("/tmp/mask.png");
+            	if(tMask.rows == 0){
+                	mask = getMask(mask_device);
+                	mask.download(tMask);
+                	cv::imwrite("/tmp/mask.png", tMask);
+            	}else{
+            		mask.upload(tMask);
+            	}
             }
 
             in_device.setTo(Scalar(0,0,0));
             mask_device.copyTo(in_device, mask);
 
             cuda::resize(in_device, resized_device, Size(M*resize_ratio,N*resize_ratio),0,0,cv::INTER_CUBIC);
-
+ //           cv::cuda::threshold(resized_device, resized_device, 180, , CV_THRESH_TRUNC);
 
             //cv::cuda::cvtColor(yuv, mask_device, cv::COLOR_BGR2GRAY);
             // mask area
             //cv::cuda::threshold(mask_device, mask_device, 127, 255, 0);
 
             // normalization
-            cv::cuda::cvtColor(resized_device, yuv, cv::COLOR_BGR2YUV);
+            cv::cuda::cvtColor(resized_device, yuv, cv::COLOR_BGR2HSV);
             std::vector<GpuMat> channels;
             cv::cuda::split(yuv, channels);
-			clahe->apply(channels[0], channels[0]);
+			clahe->apply(channels[2], channels[2]);
+
+
 //			cv::cuda::equalizeHist(channels[0], channels[0]);
 //			cv::cuda::equalizeHist(channels[1], channels[1]);
+//			cv::cuda::equalizeHist(channels[2], channels[2]);
 			//cv::cuda::normalize(channels[0], channels[0], 190, 255, cv::NORM_MINMAX, yuv.type());
-			clahe->apply(channels[1], channels[1]);
-			clahe->apply(channels[2], channels[2]);
+//			clahe->apply(channels[2], channels[2]);
+//			clahe->apply(channels[2], channels[2]);
 
 //			cv::cuda::equalizeHist(channels[1], channels[1]);
 //			cv::cuda::equalizeHist(channels[2], channels[2]);
-			//cv::cuda::normalize(channels[0], channels[0], 0, 255, cv::NORM_MINMAX, yuv.type());
+//			cv::cuda::normalize(channels[0], channels[0], 0, 255, cv::NORM_MINMAX, yuv.type());
 
-			cv::cuda::threshold(channels[0], channels[0], 180, 0, CV_THRESH_TRUNC);
+			//cv::cuda::threshold(channels[0], channels[0], 180, 0, CV_THRESH_TRUNC);
 //			cv::cuda::threshold(channels[1], channels[1], 190, 0, CV_THRESH_TRUNC);
             cv::cuda::merge(channels, yuv);
             GpuMat grey;
 
             //clahe->apply(yuv, yuv);
             //cv::cuda::equalizeHist(yuv, yuv);
-            cv::cuda::cvtColor(yuv, yuv, cv::COLOR_YUV2BGR);
-            cv::cuda::cvtColor(yuv, grey, cv::COLOR_BGR2GRAY);
+//            cv::cuda::cvtColor(yuv, yuv, cv::COLOR_YUV2BGR);
+ //           cv::cuda::cvtColor(yuv, grey, cv::COLOR_BGR2GRAY);
             //cv::cuda::threshold(yuv, yuv, 127, 255, CV_THRESH_BINARY);
-
 
 
 
@@ -187,7 +203,7 @@ int main( int argc, char** argv )
 
 
 
-            //cv::cuda::cvtColor(yuv, resized_device, cv::COLOR_BGR2GRAY);
+//            cv::cuda::cvtColor(yuv, resized_device, cv::COLOR_BGR2GRAY);
 //            GpuMat blurred;
 //            in_device.copyTo(resized_device);
 //            cv::Ptr<cv::cuda::Filter> filter = cuda::createGaussianFilter(resized_device.type(), resized_device.type(), Size(0, 0),3);
@@ -205,13 +221,12 @@ int main( int argc, char** argv )
 
             GpuMat morphed;
 
-
             //reduce the noise
             filter = cuda::createMorphologyFilter(CV_MOP_ERODE, subtracted.type(), element, Point(-1, -1), 1);
             filter->apply(subtracted, out_device);
 
             //amplify the moving objects
-            filter = cuda::createMorphologyFilter(CV_MOP_DILATE, subtracted.type(), dilateElement, Point(-1, -1), 3);
+            filter = cuda::createMorphologyFilter(CV_MOP_DILATE, subtracted.type(), dilateElement, Point(-1, -1), 1);
             filter->apply(out_device, out_device);
 //
 //            //eliminate small condours
@@ -260,8 +275,8 @@ int main( int argc, char** argv )
             filter->apply(img2d, img2d);
 
             Mat result_host(out_device);
-            Mat resized_host(img2d);
-            Mat processed(yuv);
+            Mat resized_host(resized_device);
+            Mat processed(subtracted);
             Mat morphed_cpu(morphed);
 //            Mat magnitude_cpu(magnitude);
 
@@ -304,22 +319,32 @@ int main( int argc, char** argv )
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
             int totContour = features.size() ;
             int captureCount=0;
-            if((N_FRAME > 100 && totContour < contourLengthThreshold && contourSize > contourMinSizeThresh && contourSize < 50 ))
+            if((N_FRAME > 100 && totContour < contourLengthThreshold && contourSize > contourMinSizeThresh && contourSize < contourMaxSizeThresh ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
-                if(totContour >= prevTotContour){
-					cout << "writing image to disk" << inframe.rows << endl;
-
+                if(contourSize >= prevContourSize - (0.25 * prevContourSize)){
                 	rectangle(resized_host, boundRect, color, 1);
-					saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+					motionFrames.push_back(resized_host);
+					//saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
+                }else{
+                	if(motionFrames.size() > motionLenthThreshold){
+                		cout << "writing image to disk" << inframe.rows << endl;
+                        for (auto it = begin (motionFrames); it != end (motionFrames); ++it) {
+                        	saveImg( *it , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+                        }
+
+                	}
+                	motionFrames.clear();
+                	contourSize = 0;
                 }
-                prevTotContour = totContour;
+                prevContourSize = contourSize;
                 number_of_sequence++;
             }else
             {
-            	prevTotContour = 0;
+            	prevContourSize = 0;
                 number_of_sequence = 0;
+                motionFrames.clear();
             }
             cv::imshow("Output",result_host);
             cv::imshow("Input",resized_host);

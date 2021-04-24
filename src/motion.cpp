@@ -97,7 +97,7 @@ bool saveImg(Mat image, const string DIRECTORY, const string EXTENSION, const ch
 //	compression_params.push_back(IMWRITE_JPEG_QUALITY);
 //	compression_params.push_back(100);
 
-    stringstream ss, copyCommand, rmCommand;
+    stringstream ss, fName, copyCommand, rmCommand;
     time_t seconds;
     struct tm * timeinfo;
     char TIME[80];
@@ -118,14 +118,15 @@ bool saveImg(Mat image, const string DIRECTORY, const string EXTENSION, const ch
     ss.str("");
     if(incr < 100) incr++; // quick fix for when delay < 1s && > 10ms, (when delay <= 10ms, images are overwritten)
     else incr = 0;
-    ss << DIRECTORY << TIME << static_cast<int>(incr) << EXTENSION;
+    fName << TIME << static_cast<int>(incr) << EXTENSION;
+    ss << DIRECTORY << fName.str();
     cout << "image location=" << ss.str().c_str() << endl;
     bool status = imwrite(ss.str().c_str(), image);
 
-    copyCommand << "/usr/bin/gsutil cp " <<  ss.str().c_str() << "gs://sheviz-home-automation/security-camera/" << ss.str().c_str() ;
+    copyCommand << "/usr/bin/gsutil cp " <<  ss.str().c_str() << " gs://sheviz-home-automation/security-camera/" << fName.str().c_str() ;
     rmCommand << "rm -f "  <<  ss.str().c_str();
     exec(copyCommand.str().c_str());
-    //exec(rmCommand.str().c_str());
+    exec(rmCommand.str().c_str());
     cout << "copy=" << copyCommand.str() << "rm=" << rmCommand.str() ;
 
     return status;

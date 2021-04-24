@@ -44,7 +44,7 @@ int main( int argc, char** argv )
     cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
 
 
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam4/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -104,17 +104,19 @@ int main( int argc, char** argv )
     string CROPPED_FILE_FORMAT = DIR_FORMAT + "/cropped/" + "%d%h%Y_%H%M%S"; // 1Jan1970/cropped/1Jan1970_121539
 
 
-    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(100,16,false);
+    Ptr<BackgroundSubtractor> mog2 = cuda::createBackgroundSubtractorMOG2(500,16,false);
     Ptr<BackgroundSubtractorFGD> fgd = cuda::createBackgroundSubtractorFGD();
     Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(4, Size(M,N));
     //Ptr<cuda::CLAHE> clahe = cv::cuda::createCLAHE(40, Size(8,8));
 
 
     //saves the image only when min contourSize and
-    int contourMinSizeThresh = 50;
+
+    // front : 50, back: 25
+    int contourMinSizeThresh = 25;
     int contourMaxSizeThresh = 500;
     int contourLengthThreshold = 30;
-    int motionLenthThreshold = 2;
+    int motionLenthThreshold = 1;
     cv::Ptr<cv::cuda::Filter> filter;
 
     int prevContourSize = 0;
@@ -322,7 +324,7 @@ int main( int argc, char** argv )
             if((N_FRAME > 100 && totContour < contourLengthThreshold && contourSize > contourMinSizeThresh && contourSize < contourMaxSizeThresh ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
-                if(contourSize >= prevContourSize - (0.25 * prevContourSize)){
+                if(contourSize >= prevContourSize - (0.50 * prevContourSize) && motionFrames.size() <= motionLenthThreshold){
                 	rectangle(resized_host, boundRect, color, 1);
 					motionFrames.push_back(resized_host);
 					//saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());

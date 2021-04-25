@@ -39,9 +39,13 @@ int main( int argc, char** argv )
     system("clear");
     float time;
     Mat img;
-    cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
-    cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
-    cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
+    bool preview = false;
+
+    if(preview){
+		cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
+		cv::namedWindow("Input", cv::WINDOW_AUTOSIZE);
+		cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
+    }
 
 
     const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
@@ -116,7 +120,11 @@ int main( int argc, char** argv )
     int contourMinSizeThresh = 20;
     int contourMaxSizeThresh = 500;
     int contourLengthThreshold = 30;
+    // front:2/3, back:1
     int motionLenthThreshold = 1;
+
+
+
     cv::Ptr<cv::cuda::Filter> filter;
 
     int prevContourSize = 0;
@@ -364,9 +372,13 @@ int main( int argc, char** argv )
                 number_of_sequence = 0;
                 motionFrames.clear();
             }
-            cv::imshow("Output",result_host);
-            cv::imshow("Input",resized_host);
-            cv::imshow("Processed",processed);
+
+            if(preview){
+                cv::imshow("Output",result_host);
+                cv::imshow("Input",resized_host);
+                cv::imshow("Processed",processed);
+            }
+
 //            cv::imshow("Morphed",morphed_cpu);
 //            cv::imshow("Magnitude",magnitude_cpu);
     		if((char)cv::waitKey(1) == (char)27)

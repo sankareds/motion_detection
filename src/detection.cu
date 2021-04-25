@@ -18,6 +18,8 @@
 #include <cuda/device_launch_parameters.h>
 #include "opencv2/cudaarithm.hpp"
 #include "opencv2/cudabgsegm.hpp"
+#include <chrono>
+#include "jetson-inference/detectNet.h"
 
 using namespace cv;
 using namespace std;
@@ -39,7 +41,7 @@ int main( int argc, char** argv )
     system("clear");
     float time;
     Mat img;
-    bool preview = false;
+    bool preview = true;
 
     if(preview){
 		cv::namedWindow("Output", cv::WINDOW_AUTOSIZE);
@@ -47,8 +49,8 @@ int main( int argc, char** argv )
 		cv::namedWindow("Processed", cv::WINDOW_AUTOSIZE);
     }
 
-
-    const char* gst =  "rtspsrc location=rtsp://admin:@cam1/ch0_0.264 name=r1 latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
+    cout << "<============== front camera ======================>" << endl;
+    const char* gst =  "rtspsrc location=rtsp://admin:@cam4/ch0_0.264 name=ter latency=0 protocols=tcp ! application/x-rtp,payload=96,encoding-name=H264 ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM), format=BGRx ! nvvidconv ! videoconvert ! video/x-raw, format=BGR, framerate=5/1 ! appsink max-buffers=5 drop=true";
     cv::VideoCapture cap(gst, cv::CAP_GSTREAMER);
     if ( !cap.isOpened() )
     {
@@ -117,12 +119,14 @@ int main( int argc, char** argv )
     //saves the image only when min contourSize and
 
     // front : 50, back: 20
-    int contourMinSizeThresh = 20;
+    int contourMinSizeThresh = 30;
     int contourMaxSizeThresh = 500;
     int contourLengthThreshold = 30;
     // front:2/3, back:1
-    int motionLenthThreshold = 1;
+    int motionLenthThreshold = 5;
 
+    std::chrono::steady_clock::time_point last_detected = std::chrono::steady_clock::now();
+    int motion_gap_secs = 5;
 
 
     cv::Ptr<cv::cuda::Filter> filter;
@@ -135,6 +139,8 @@ int main( int argc, char** argv )
     cudaEventRecord( start, 0 );
 
     std::vector<Mat> motionFrames;
+
+    detectNet* net = detectNet::Create(detectNet::SSD_INCEPTION_V2);
 
     while(1)
     {
@@ -152,8 +158,10 @@ int main( int argc, char** argv )
             }
 
             GpuMat in_device(height, width, CV_8UC3),mask_device, yuv(N, M, CV_8UC3, Scalar(0,0,0));
-            mask_device.upload(inframe);
 
+//            in_device.upload(inframe);
+
+            mask_device.upload(inframe);
             if(mask.rows == 0){
             	Mat tMask;
             	tMask = cv::imread("/tmp/mask.png");
@@ -287,7 +295,7 @@ int main( int argc, char** argv )
 
             Mat result_host(out_device);
             Mat resized_host(resized_device);
-            Mat processed(subtracted);
+            Mat processed(in_device);
             Mat morphed_cpu(morphed);
 //            Mat magnitude_cpu(magnitude);
 
@@ -330,37 +338,64 @@ int main( int argc, char** argv )
             cout << "number of changes=" << features.size() << "|| Max Contour=" << contourSize<< endl;
             int totContour = features.size() ;
             int captureCount=0;
+
+            detectNet::Detection* detections = NULL;
+            const uint32_t overlayFlags = detectNet::OverlayFlagsFromStr("box,labels,conf");
+            cv::imread("/tmp/mask.png");
+            const int numDetections = net->Detect((uchar3*)resized_device.data, resized_host.cols, resized_host.rows, &detections, overlayFlags);
+
+    		if( numDetections > 0 )
+    		{
+    			cout << numDetections << " objects detected" << endl;
+
+    			for( int n=0; n < numDetections; n++ )
+    			{
+    				cout << "detected obj " << net->GetClassDesc(detections[n].ClassID) << "with confidence " << detections[n].Confidence << endl;
+    				//LogVerbose("bounding box %i  (%f, %f)  (%f, %f)  w=%f  h=%f\n", n, detections[n].Left, detections[n].Top, detections[n].Right, detections[n].Bottom, detections[n].Width(), detections[n].Height());
+    			}
+    		}
+
             if((N_FRAME > 100 && totContour < contourLengthThreshold && contourSize > contourMinSizeThresh && contourSize < contourMaxSizeThresh ))
             {
                 //cout << "--------------****motion detected------------**************" << number_of_changes << endl;
                 if(contourSize >= prevContourSize - (0.50 * prevContourSize) && motionFrames.size() <= motionLenthThreshold){
 
-                	Rect cropped_rect(boundRect);
-                	int cropped_threshold = 250;
+                	Rect cropped_rect(0,0,0,0);
+                	if(boundRect.x > 0) cropped_rect.x = boundRect.x ;
+                	if(boundRect.y > 0) cropped_rect.y  = boundRect.y;
+                	if(boundRect.width > 0) cropped_rect.width = boundRect.width;
+                	if(boundRect.height > 0) cropped_rect.height = boundRect.height;
+
+                	int cropped_threshold = 50;
 					if(boundRect.x - cropped_threshold > 0) cropped_rect.x = boundRect.x - cropped_threshold;
 					if(boundRect.y - cropped_threshold > 0) cropped_rect.y = boundRect.y - cropped_threshold;
 					if(boundRect.width+cropped_threshold < resized_host.cols-1) cropped_rect.width = boundRect.width + cropped_threshold;
 					if(boundRect.height+cropped_threshold < resized_host.rows-1) cropped_rect.height = boundRect.height + cropped_threshold;
 
-					cout << boundRect.x << boundRect.y << boundRect.width << boundRect.height << endl ;
-					cout << cropped_rect.x << cropped_rect.y << cropped_rect.width << cropped_rect.height << endl ;
-
 					Mat cropped = resized_host(cropped_rect);
 					Mat result_cropped;
+					cout << "before cropped" << endl;
 					cropped.copyTo(result_cropped);
+					cout << "after cropped" << endl;
 					//motionFrames.push_back(resized_host);
 					motionFrames.push_back(result_cropped);
 					rectangle(resized_host, boundRect, color, 1);
 					//saveImg( resized_host , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
 					//saveImg(result_cropped,DIR,EXT,DIR_FORMAT.c_str(),CROPPED_FILE_FORMAT.c_str());
                 }else{
-                	if(motionFrames.size() > motionLenthThreshold){
+            		std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            		int elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(now - last_detected).count();
+                	if(motionFrames.size() > motionLenthThreshold && elapsed_time > motion_gap_secs){
                 		cout << "writing image to disk" << inframe.rows << endl;
-                        for (auto it = begin (motionFrames); it != end (motionFrames); ++it) {
-                        	saveImg( *it , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+                        for (int idx = 0; idx < motionFrames.size(); ++idx) {
+                        	if(idx == motionFrames.size()/ 2  || (idx == motionFrames.size()/ 2 + 1 && motionFrames.size()/ 2 + 1 < motionFrames.size() ) ){
+                        		saveImg( motionFrames[idx] , DIR,EXT,DIR_FORMAT.c_str(),FILE_FORMAT.c_str());
+                        	}
+
                         }
 
                 	}
+                	last_detected = std::chrono::steady_clock::now();
                 	motionFrames.clear();
                 	contourSize = 0;
                 }
